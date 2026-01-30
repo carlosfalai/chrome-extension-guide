@@ -6,7 +6,156 @@ When working on Chrome extensions, reference this guide. For project-specific co
 
 ---
 
+## 🔐 MANDATORY: Google Sign-In & Auth-Gated Data (DEFAULT FOR ALL EXTENSIONS)
+
+**EVERY Chrome extension MUST have Google Sign-In and auth-gated data protection BY DEFAULT.**
+
+This is NON-NEGOTIABLE. All extensions we build follow this security pattern:
+
+### Core Requirements
+
+1. **Google Sign-In Required** - Users must sign in with Google to use the extension
+2. **No Data Without Auth** - When signed out, NO user data is visible or accessible
+3. **Data Follows Account** - User data is stored in Firebase, tied to their Google UID
+4. **Clean Logout** - Sign out clears ALL local data (privacy on shared devices)
+5. **Data Restoration** - Sign back in = data fetched from Firebase automatically
+
+### Why This Is Mandatory
+
+- **Privacy:** On shared computers, the next user sees NOTHING
+- **Security:** No sensitive data left on disk after sign-out
+- **Trust:** Users expect sign-out to mean "hide my stuff"
+- **Consistency:** Same behavior as Chrome bookmarks/history when signed out
+
+### Implementation Checklist (Every Extension)
+
+```
+☐ manifest.json includes "identity" permission
+☐ manifest.json has oauth2 configuration with client_id
+☐ popup.html has #authRequired screen (shown when logged out)
+☐ popup.html has #appContent wrapper (hidden when logged out)
+☐ popup.js checks auth state on load, shows correct screen
+☐ background.js handleLogout() calls chrome.storage.local.clear()
+☐ All user data stored in Firebase under userData/{uid}/
+☐ Data fetched from Firebase on sign-in
+☐ Tested: sign out → sign in → data restored
+```
+
+### Default File Structure
+
+Every extension starts with this auth-gated structure:
+
+```
+extension/
+├── manifest.json          # With identity + oauth2
+├── background.js          # Auth handlers, Firebase sync
+├── popup.html             # Auth screen + app content
+├── popup.js               # Auth state management
+├── content.js             # (if needed)
+├── styles.css
+├── firebase-config.js     # Firebase API keys
+└── worker/                # Cloudflare Worker for licenses
+    ├── wrangler.toml
+    ├── package.json
+    └── src/index.js
+```
+
+### Quick Reference Code
+
+**popup.html structure:**
+```html
+<!-- Auth Required - shown when NOT signed in -->
+<div id="authRequired" class="auth-required">
+  <div class="auth-icon">🔐</div>
+  <h2>Sign in to Continue</h2>
+  <p>Your data is tied to your account.</p>
+  <button id="authSignInBtn">Sign in with Google</button>
+</div>
+
+<!-- App Content - hidden when NOT signed in -->
+<div id="appContent" style="display:none;">
+  <!-- All app UI here -->
+</div>
+```
+
+**popup.js auth check:**
+```javascript
+chrome.storage.local.get("auth", (data) => {
+  if (data.auth) {
+    document.getElementById('authRequired').style.display = 'none';
+    document.getElementById('appContent').style.display = 'block';
+    loadUserData(data.auth);
+  } else {
+    document.getElementById('authRequired').style.display = 'flex';
+    document.getElementById('appContent').style.display = 'none';
+  }
+});
+```
+
+**background.js logout (CRITICAL):**
+```javascript
+async function handleLogout() {
+  // Remove cached auth token
+  const token = await chrome.identity.getAuthToken({ interactive: false });
+  if (token?.token) await chrome.identity.removeCachedAuthToken({ token: token.token });
+
+  // CRITICAL: Clear ALL local data
+  await chrome.storage.local.clear();
+
+  // Restore minimal defaults only
+  await chrome.storage.local.set({ settings: { enabled: false } });
+
+  return { ok: true };
+}
+```
+
+**Firebase data storage pattern:**
+```javascript
+// Save user data to Firebase (on any change)
+await fetch(`${FIREBASE_URL}/userData/${auth.uid}/data.json?auth=${auth.idToken}`, {
+  method: "PUT",
+  body: JSON.stringify(userData)
+});
+
+// Load user data from Firebase (on sign-in)
+const resp = await fetch(`${FIREBASE_URL}/userData/${auth.uid}/data.json`);
+const userData = await resp.json();
+```
+
+---
+
 ## ⚠️ CRITICAL WARNINGS
+
+### ONE PROJECT = ONE NAME (Naming Consistency)
+
+**CRITICAL: Use the SAME name across ALL services from day one.**
+
+When starting a new project, pick ONE name and use it EVERYWHERE:
+- Folder name
+- package.json
+- Firebase project ID
+- GCP project ID
+- Cloudflare Worker name
+- Git repo name
+- Chrome Web Store listing
+
+**BAD (causes hours of debugging):**
+```
+Folder:    auth-code-dashboard
+Firebase:  auth-code-dashboard
+Worker:    justcodes-api         ← DIFFERENT NAME!
+Store:     "No BS Auth Codes"    ← DIFFERENT NAME!
+```
+
+**GOOD:**
+```
+Folder:    no-bs-auth-codes
+Firebase:  no-bs-auth-codes
+Worker:    no-bs-auth-codes-api
+Store:     "No BS Auth Codes"
+```
+
+**If inheriting a messy project:** Create a `PROJECT-NAMES.md` file documenting all the different names so nothing breaks.
 
 ### Image Generation Quality Check
 **ALWAYS visually verify generated images before giving to user!**
@@ -687,27 +836,103 @@ npx wrangler pages deploy . --project-name=[project-name]
 - Initialize npm: `npm init -y && npm install canvas playwright`
 - Create manifest.json (MV3, permissions, host_permissions)
 
-### Phase 2: Core Development
+### Phase 2: Authentication & Auth-Gated Data (MANDATORY)
+**Every extension MUST implement this before any other features.**
+
+1. **Firebase Setup**
+   - Create Firebase project at console.firebase.google.com
+   - Enable Authentication > Google provider
+   - Create Realtime Database with user-scoped rules
+   - Copy Firebase config to extension
+
+2. **OAuth Client Setup**
+   - Create OAuth client in Google Cloud Console
+   - Add extension ID to authorized origins
+   - Add `oauth2` section to manifest.json
+
+3. **Auth-Gated UI Structure**
+   - Create `#authRequired` screen (shown when logged out)
+   - Create `#appContent` wrapper (shown when logged in)
+   - Implement `renderAuth()` function to toggle visibility
+
+4. **Data Protection**
+   - On sign-out: `chrome.storage.local.clear()` wipes ALL local data
+   - On sign-in: Fetch user data from Firebase and populate UI
+   - User data NEVER visible when signed out
+
+**Reference:** See "🔐 MANDATORY: Google Sign-In & Auth-Gated Data" section at top of this guide.
+
+### Phase 3: Core Development
 - Build content scripts, popup UI, background worker
 - Implement core functionality
-- Add chrome.storage for settings persistence
+- Store user data in Firebase (NOT just local storage)
+- All user-specific data must sync to `userData/{uid}/` path
 
-### Phase 3: Testing with Playwright
+### Phase 4: Testing with Playwright
 - Create test-full.js with test cases
+- **Test auth cycle**: sign-in → verify data shows → sign-out → verify data hidden → sign-in → verify data restored
 - Run tests and fix errors
 - Verify extension loads and features work
 
-### Phase 4: Pro/Payment Features & Supporters Monetization
+### Phase 5: Pro/Payment Features & Supporters Monetization
 
 **Standard monetization tiers for ALL extensions:**
-1. **Free** - Full features with non-intrusive ads
-2. **Remove Ads ($4.99)** - One-time, no ads
-3. **Supporter ($32)** - Lifetime, badge, name in credits
-4. **Broadcast ($32)** - Custom message shown to ALL users forever
+
+| Tier | Price | Duration | Editable | Features |
+|------|-------|----------|----------|----------|
+| **Free** | $0 | Forever | N/A | Full features with non-intrusive ads |
+| **Remove Ads** | $4.99 | Forever | N/A | No ads, clean interface |
+| **Supporter** | $32 | Forever | N/A | No ads, badge, name on the Billboard |
+| **Broadcast** | $32 | Forever | **YES** | Message + link in credits, owner can update anytime |
+| **Billboard** | $1 | 7 days | No | Short message in scrolling credits, then expires |
+
+**Key difference between Broadcast ($32) and Billboard ($1):**
+- **Billboard**: Cheap, temporary visibility (7 days), non-editable, no link
+- **Broadcast**: Premium, permanent visibility, owner can update message/link anytime via their email
 
 ---
 
-#### 4.1 Create Stripe Products
+### 🌐 SHARED BILLBOARD SYSTEM (Cross-Project)
+
+**IMPORTANT: The Billboard is SHARED across ALL extensions.**
+
+When someone buys a Billboard message ($1) or Broadcast ($32), their message appears in **EVERY app** that uses this system - not just the one they purchased from. This creates a unified supporter ecosystem across all projects.
+
+**How it works:**
+1. **One API, many apps** - All extensions point to the same Cloudflare Worker API
+2. **Unified supporter base** - A broadcast bought in "The School" also shows in "4chan Integrity", "No BS Auth Codes", etc.
+3. **Cross-promotion** - Supporters get visibility across the entire portfolio
+4. **Shared mission** - All projects fund the same mission (free education, open tools, etc.)
+
+**Implementation:**
+```javascript
+// SAME API URL in ALL extensions
+const BILLBOARD_API = 'https://supporters-api.carlosfavielfont.workers.dev';
+
+// Every extension calls the same endpoints
+fetch(`${BILLBOARD_API}/broadcasts`);  // Returns ALL broadcasts
+fetch(`${BILLBOARD_API}/supporters`);  // Returns ALL supporters
+```
+
+**What this means for buyers:**
+- **$1 Billboard** → Message shows in ALL apps for 7 days
+- **$32 Broadcast** → Message shows in ALL apps forever, editable anytime
+- **$32 Supporter** → Name shows in ALL apps forever
+
+**Worker setup for shared system:**
+- Deploy ONE worker: `supporters-api.carlosfavielfont.workers.dev`
+- All extensions use this same endpoint
+- Stripe webhooks from any project go to this same worker
+
+**Benefits:**
+- More visibility for supporters (multi-app reach)
+- Unified community across projects
+- Single source of truth for all supporter data
+- Simpler infrastructure (one API, not per-project APIs)
+
+---
+
+#### 5.1 Create Stripe Products
 
 ```bash
 # Remove Ads tier
@@ -724,211 +949,271 @@ curl -s https://api.stripe.com/v1/payment_links -u "$STRIPE_SECRET_KEY:" \
   -d "line_items[0][price]=price_XXX" -d "line_items[0][quantity]=1" \
   -d "metadata[product_type]=lifetime"
 
-# Broadcast tier (includes supporter benefits)
+# Broadcast tier ($32, editable forever)
 curl -s https://api.stripe.com/v1/products -u "$STRIPE_SECRET_KEY:" -d "name=[NAME] - Broadcast Message"
 curl -s https://api.stripe.com/v1/prices -u "$STRIPE_SECRET_KEY:" -d "product=prod_XXX" -d "unit_amount=3200" -d "currency=usd"
 # Note: Broadcast needs custom checkout with message field - set up in Stripe Dashboard
+
+# Billboard tier ($1, expires after 7 days)
+curl -s https://api.stripe.com/v1/products -u "$STRIPE_SECRET_KEY:" -d "name=[NAME] - Billboard Message"
+curl -s https://api.stripe.com/v1/prices -u "$STRIPE_SECRET_KEY:" -d "product=prod_XXX" -d "unit_amount=100" -d "currency=usd"
+curl -s https://api.stripe.com/v1/payment_links -u "$STRIPE_SECRET_KEY:" \
+  -d "line_items[0][price]=price_XXX" -d "line_items[0][quantity]=1" \
+  -d "metadata[product_type]=billboard"
 ```
 
 ---
 
-#### 4.2 Cloudflare Worker for License Validation & Supporters API
+#### 5.2 Cloudflare Worker for Supporters API (Complete Template)
 
-Create `worker/wrangler.toml`:
+This worker handles:
+- License validation
+- Stripe webhooks for all tiers (Remove Ads, Supporter, Broadcast, Billboard)
+- Billboard messages (expire after 7 days automatically)
+- Broadcast messages (permanent, **editable by owner** via their email)
+- The Billboard (shared across all projects)
+
+Create `workers/supporters-api/wrangler.toml`:
 ```toml
 name = "[project]-api"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
 
-[vars]
-STRIPE_WEBHOOK_SECRET = "" # Set via: wrangler secret put STRIPE_WEBHOOK_SECRET
-
 [[kv_namespaces]]
-binding = "LICENSES"
-id = "" # Create via: wrangler kv namespace create LICENSES
+binding = "SUPPORTERS"
+id = "" # Create via: wrangler kv namespace create SUPPORTERS
 ```
 
-Create `worker/src/index.js`:
+Create `workers/supporters-api/src/index.js`:
 ```javascript
+/**
+ * Supporters API Worker - Complete Monetization Template
+ *
+ * API Endpoints:
+ * - GET /supporters       - Get all supporters (public)
+ * - GET /broadcasts       - Get broadcasts, filters expired billboards (public)
+ * - GET /broadcasts/mine  - Get user's editable broadcasts by email
+ * - PUT /broadcasts/:id   - Update broadcast (owner verification via email)
+ * - POST /stripe-webhook  - Handle Stripe payment webhooks
+ * - GET /health           - Health check
+ */
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    const path = url.pathname;
+
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, Stripe-Signature',
     };
 
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders });
     }
 
-    if (url.pathname === '/validate' && request.method === 'GET') {
-      return handleValidate(url, env, corsHeaders);
-    }
-    if (url.pathname === '/webhook' && request.method === 'POST') {
-      return handleWebhook(request, env, corsHeaders);
-    }
-    if (url.pathname === '/supporters' && request.method === 'GET') {
-      return handleGetSupporters(env, corsHeaders);
-    }
-    if (url.pathname === '/broadcasts' && request.method === 'GET') {
-      return handleGetBroadcasts(env, corsHeaders);
-    }
+    try {
+      // GET SUPPORTERS (Public)
+      if (path === '/supporters' && request.method === 'GET') {
+        const supportersJson = await env.SUPPORTERS.get('supporters-list');
+        const supporters = supportersJson ? JSON.parse(supportersJson) : [];
+        return new Response(JSON.stringify({ supporters, count: supporters.length }), {
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
 
-    return new Response('Not found', { status: 404, headers: corsHeaders });
-  },
-};
+      // GET BROADCASTS (Public) - Filters expired billboards
+      if (path === '/broadcasts' && request.method === 'GET') {
+        const broadcastsJson = await env.SUPPORTERS.get('broadcasts-list');
+        let broadcasts = broadcastsJson ? JSON.parse(broadcastsJson) : [];
 
-// License validation
-async function handleValidate(url, env, headers) {
-  const key = url.searchParams.get('key');
-  if (!key) return json({ valid: false, error: 'Missing key' }, 400, headers);
+        // Filter out expired billboard messages (7 days)
+        const now = new Date();
+        const BILLBOARD_EXPIRY_DAYS = 7;
+        broadcasts = broadcasts.filter(b => {
+          if (b.type === 'billboard') {
+            const created = new Date(b.createdAt);
+            const ageInDays = (now - created) / (1000 * 60 * 60 * 24);
+            return ageInDays < BILLBOARD_EXPIRY_DAYS;
+          }
+          return true; // Broadcasts ($32) last forever
+        });
 
-  const record = await env.LICENSES.get(key.toUpperCase(), 'json');
-  if (record && record.active !== false) {
-    return json({ valid: true, tier: record.tier || 'pro' }, 200, headers);
-  }
-  return json({ valid: false }, 200, headers);
-}
+        // Don't expose emails in public response
+        const publicBroadcasts = broadcasts.map(b => ({
+          id: b.id, name: b.name, message: b.message,
+          link: b.link, type: b.type, createdAt: b.createdAt
+        }));
 
-// Stripe webhook handler
-async function handleWebhook(request, env, headers) {
-  const body = await request.text();
-  const sig = request.headers.get('stripe-signature');
+        return new Response(JSON.stringify({ broadcasts: publicBroadcasts, count: broadcasts.length }), {
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
 
-  if (!verifySignature(body, sig, env.STRIPE_WEBHOOK_SECRET)) {
-    return json({ error: 'Invalid signature' }, 401, headers);
-  }
+      // GET MY BROADCASTS (by email - for editing $32 broadcasts)
+      if (path === '/broadcasts/mine' && request.method === 'GET') {
+        const email = url.searchParams.get('email');
+        if (!email) {
+          return new Response(JSON.stringify({ error: 'Email required' }), {
+            status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders }
+          });
+        }
 
-  const event = JSON.parse(body);
+        const broadcastsJson = await env.SUPPORTERS.get('broadcasts-list');
+        const broadcasts = broadcastsJson ? JSON.parse(broadcastsJson) : [];
+        const myBroadcasts = broadcasts.filter(b => b.email === email && b.editable === true);
 
-  if (event.type === 'checkout.session.completed') {
-    const session = event.data.object;
-    const email = session.customer_email || session.customer_details?.email || '';
-    const name = session.customer_details?.name || email.split('@')[0] || 'Anonymous';
-    const productType = session.metadata?.product_type || 'pro';
-    const broadcastMessage = session.metadata?.broadcast_message || '';
-    const broadcastUrl = session.metadata?.broadcast_url || '';
+        return new Response(JSON.stringify({ broadcasts: myBroadcasts, count: myBroadcasts.length }), {
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
 
-    // Generate license key
-    const licenseKey = generateKey();
-    const tier = productType === 'broadcast' ? 'lifetime' : productType;
+      // UPDATE BROADCAST (owner can edit $32 broadcasts anytime!)
+      if (path.startsWith('/broadcasts/') && request.method === 'PUT') {
+        const broadcastId = path.split('/')[2];
+        const { email, message, link, name } = await request.json();
 
-    // Save license
-    await env.LICENSES.put(licenseKey, JSON.stringify({
-      key: licenseKey, email, name, tier, productType,
-      created: Date.now(), active: true,
-      customerId: session.customer, sessionId: session.id,
-    }));
+        if (!email) {
+          return new Response(JSON.stringify({ error: 'Email required for verification' }), {
+            status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders }
+          });
+        }
 
-    // Email → keys lookup
-    const existing = await env.LICENSES.get(`email:${email}`, 'json') || [];
-    existing.push(licenseKey);
-    await env.LICENSES.put(`email:${email}`, JSON.stringify(existing));
+        const broadcastsJson = await env.SUPPORTERS.get('broadcasts-list');
+        const broadcasts = broadcastsJson ? JSON.parse(broadcastsJson) : [];
+        const idx = broadcasts.findIndex(b => b.id === broadcastId);
 
-    // Add to supporters (for lifetime and broadcast)
-    if (productType === 'lifetime' || productType === 'broadcast') {
-      await addSupporter(env, { name, email, date: Date.now(), licenseKey });
-    }
+        if (idx === -1) {
+          return new Response(JSON.stringify({ error: 'Broadcast not found' }), {
+            status: 404, headers: { 'Content-Type': 'application/json', ...corsHeaders }
+          });
+        }
 
-    // Add broadcast message
-    if (productType === 'broadcast' && broadcastMessage) {
-      await addBroadcast(env, {
-        name, email, message: broadcastMessage, url: broadcastUrl,
-        date: Date.now(), active: true, licenseKey,
+        const broadcast = broadcasts[idx];
+
+        // Verify ownership by email
+        if (broadcast.email !== email) {
+          return new Response(JSON.stringify({ error: 'Not authorized' }), {
+            status: 403, headers: { 'Content-Type': 'application/json', ...corsHeaders }
+          });
+        }
+
+        // Only $32 broadcasts are editable
+        if (!broadcast.editable) {
+          return new Response(JSON.stringify({ error: 'Not editable' }), {
+            status: 403, headers: { 'Content-Type': 'application/json', ...corsHeaders }
+          });
+        }
+
+        // Update fields
+        if (message !== undefined) broadcast.message = message.substring(0, 200);
+        if (link !== undefined) broadcast.link = link ? link.substring(0, 200) : null;
+        if (name !== undefined) broadcast.name = name.substring(0, 50);
+        broadcast.updatedAt = new Date().toISOString();
+
+        broadcasts[idx] = broadcast;
+        await env.SUPPORTERS.put('broadcasts-list', JSON.stringify(broadcasts));
+
+        return new Response(JSON.stringify({ success: true, broadcast }), {
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+
+      // STRIPE WEBHOOK - Handles all purchase types
+      if (path === '/stripe-webhook' && request.method === 'POST') {
+        const body = await request.text();
+        let event;
+        try { event = JSON.parse(body); }
+        catch { return new Response(JSON.stringify({ error: 'Invalid JSON' }), { status: 400, headers: corsHeaders }); }
+
+        if (event.type === 'checkout.session.completed') {
+          const session = event.data.object;
+          const metadata = session.metadata || {};
+          const customerEmail = session.customer_details?.email;
+          const customerName = session.customer_details?.name || metadata.name || 'Anonymous';
+          const productType = metadata.product_type || 'supporter';
+
+          if (productType === 'broadcast' || productType === 'billboard') {
+            const broadcastsJson = await env.SUPPORTERS.get('broadcasts-list');
+            const broadcasts = broadcastsJson ? JSON.parse(broadcastsJson) : [];
+
+            const customFields = session.custom_fields || [];
+            const messageField = customFields.find(f => f.key === 'message');
+            const linkField = customFields.find(f => f.key === 'link');
+            const message = messageField?.text?.value || metadata.message || 'Thank you!';
+            const link = linkField?.text?.value || metadata.link || null;
+
+            broadcasts.unshift({
+              id: crypto.randomUUID(),
+              email: customerEmail,
+              name: customerName.substring(0, 50),
+              message: message.substring(0, productType === 'billboard' ? 50 : 200),
+              link: productType === 'billboard' ? null : (link ? link.substring(0, 200) : null),
+              type: productType,
+              editable: productType === 'broadcast', // Only $32 broadcasts can be edited
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            });
+
+            await env.SUPPORTERS.put('broadcasts-list', JSON.stringify(broadcasts));
+          } else {
+            const supportersJson = await env.SUPPORTERS.get('supporters-list');
+            const supporters = supportersJson ? JSON.parse(supportersJson) : [];
+
+            supporters.unshift({
+              id: crypto.randomUUID(),
+              name: customerName.substring(0, 50),
+              tier: productType,
+              createdAt: new Date().toISOString()
+            });
+
+            if (supporters.length > 1000) supporters.length = 1000;
+            await env.SUPPORTERS.put('supporters-list', JSON.stringify(supporters));
+          }
+        }
+
+        return new Response(JSON.stringify({ received: true }), {
+          headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        });
+      }
+
+      // HEALTH CHECK
+      if (path === '/health' || path === '/') {
+        return new Response(JSON.stringify({
+          status: 'ok',
+          endpoints: ['/supporters', '/broadcasts', '/broadcasts/mine', '/stripe-webhook']
+        }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+      }
+
+      return new Response(JSON.stringify({ error: 'Not Found' }), {
+        status: 404, headers: { 'Content-Type': 'application/json', ...corsHeaders }
+      });
+
+    } catch (error) {
+      return new Response(JSON.stringify({ error: error.message }), {
+        status: 500, headers: { 'Content-Type': 'application/json', ...corsHeaders }
       });
     }
-
-    console.log(`New ${productType} purchase: ${email} → ${licenseKey}`);
   }
-
-  return json({ received: true }, 200, headers);
-}
-
-// Supporters list with numbered order
-async function addSupporter(env, supporter) {
-  const list = await env.LICENSES.get('supporters:list', 'json') || [];
-  const counter = await env.LICENSES.get('supporters:counter', 'json') || { count: 0 };
-  counter.count += 1;
-
-  list.push({ number: counter.count, name: supporter.name, date: supporter.date });
-
-  await env.LICENSES.put('supporters:list', JSON.stringify(list));
-  await env.LICENSES.put('supporters:counter', JSON.stringify(counter));
-  return counter.count;
-}
-
-// Broadcast messages with numbered order
-async function addBroadcast(env, broadcast) {
-  const list = await env.LICENSES.get('broadcasts:list', 'json') || [];
-  const counter = await env.LICENSES.get('supporters:counter', 'json') || { count: 0 };
-  counter.count += 1;
-
-  list.push({
-    number: counter.count, name: broadcast.name, message: broadcast.message,
-    url: broadcast.url, date: broadcast.date, active: true, id: crypto.randomUUID(),
-  });
-
-  await env.LICENSES.put('broadcasts:list', JSON.stringify(list));
-  await env.LICENSES.put('supporters:counter', JSON.stringify(counter));
-  return counter.count;
-}
-
-async function handleGetSupporters(env, headers) {
-  const list = await env.LICENSES.get('supporters:list', 'json') || [];
-  return json({ supporters: list }, 200, headers);
-}
-
-async function handleGetBroadcasts(env, headers) {
-  const list = await env.LICENSES.get('broadcasts:list', 'json') || [];
-  const active = list.filter(b => b.active);
-  return json({ broadcasts: active }, 200, headers);
-}
-
-// Helpers
-function generateKey() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  const parts = [];
-  for (let p = 0; p < 4; p++) {
-    let seg = '';
-    for (let i = 0; i < 5; i++) seg += chars[Math.floor(Math.random() * chars.length)];
-    parts.push(seg);
-  }
-  return parts.join('-');
-}
-
-async function verifySignature(payload, sigHeader, secret) {
-  if (!sigHeader || !secret) return false;
-  const parts = Object.fromEntries(sigHeader.split(',').map(p => p.trim().split('=')));
-  const timestamp = parts.t, signature = parts.v1;
-  if (!timestamp || !signature) return false;
-
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const signed = await crypto.subtle.sign('HMAC', key, enc.encode(`${timestamp}.${payload}`));
-  const expected = Array.from(new Uint8Array(signed)).map(b => b.toString(16).padStart(2, '0')).join('');
-  return expected === signature;
-}
-
-function json(data, status, headers) {
-  return new Response(JSON.stringify(data), {
-    status, headers: { ...headers, 'Content-Type': 'application/json' },
-  });
-}
+};
 ```
 
 **Deploy worker:**
 ```bash
-cd worker
-wrangler kv namespace create LICENSES  # Copy ID to wrangler.toml
-wrangler secret put STRIPE_WEBHOOK_SECRET  # Paste from Stripe Dashboard
+cd workers/supporters-api
+wrangler kv namespace create SUPPORTERS  # Copy ID to wrangler.toml
 wrangler deploy
 ```
 
+**Set up Stripe webhook in Dashboard:**
+1. Go to Stripe → Developers → Webhooks
+2. Add endpoint: `https://[project]-api.[account].workers.dev/stripe-webhook`
+3. Select event: `checkout.session.completed`
+
 ---
 
-#### 4.3 Supporters Ticker CSS
+#### 5.3 Supporters Ticker CSS
 
 Add to `popup.css`:
 ```css
@@ -996,7 +1281,7 @@ Add to `popup.css`:
 
 ---
 
-#### 4.4 Supporters Ticker JavaScript
+#### 5.4 Supporters Ticker JavaScript
 
 Add to `popup.js`:
 ```javascript
@@ -1078,7 +1363,7 @@ loadSupporters();
 
 ---
 
-#### 4.5 Supporters Ticker HTML
+#### 5.5 Supporters Ticker HTML
 
 Add to `popup.html`:
 ```html
@@ -1098,7 +1383,7 @@ Add to `popup.html`:
 
 ---
 
-#### 4.6 Settings UI for Purchases
+#### 5.6 Settings UI for Purchases
 
 Add to settings in `popup.html`:
 ```html
@@ -1150,17 +1435,171 @@ Add to settings in `popup.html`:
 <div id="licenseStatus"></div>
 ```
 
-### Phase 5: Asset Generation
+---
+
+#### 5.7 Edit Broadcast UI (for $32 owners)
+
+Add to settings section in `popup.html` (shows when user has an editable broadcast):
+```html
+<!-- Edit Your Broadcast ($32 owners can update anytime) -->
+<div id="editBroadcastSection" style="display:none;margin-top:12px;padding:12px;background:rgba(100,255,218,0.1);border-radius:10px;border:1px solid rgba(100,255,218,0.2);">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+    <span style="font-size:16px;">✏️</span>
+    <div>
+      <div style="font-size:12px;color:#64ffda;font-weight:600;">Your Broadcast</div>
+      <div style="font-size:9px;color:#8892b0;">Edit anytime - it's yours forever!</div>
+    </div>
+  </div>
+  <input type="hidden" id="editBroadcastId">
+  <div style="margin-bottom:8px;">
+    <input type="text" id="editBroadcastName" placeholder="Your name" style="width:100%;padding:8px;font-size:12px;">
+  </div>
+  <div style="margin-bottom:8px;">
+    <input type="text" id="editBroadcastMessage" placeholder="Your message (200 chars max)" maxlength="200" style="width:100%;padding:8px;font-size:12px;">
+  </div>
+  <div style="margin-bottom:8px;">
+    <input type="url" id="editBroadcastLink" placeholder="Link URL (optional)" style="width:100%;padding:8px;font-size:12px;">
+  </div>
+  <button class="btn btn-primary" id="saveBroadcastBtn" style="width:100%;padding:8px;font-size:12px;">Save Changes</button>
+</div>
+```
+
+Add to `popup.js` to load and save user's broadcasts:
+```javascript
+// ============================================
+// EDITABLE BROADCASTS ($32 owners can edit anytime)
+// ============================================
+
+async function loadMyBroadcasts() {
+  try {
+    const { settings: s } = await chrome.storage.local.get('settings');
+    const userEmail = s?.user?.email;
+
+    if (!userEmail) {
+      document.getElementById('editBroadcastSection').style.display = 'none';
+      return;
+    }
+
+    const response = await fetch(`${API_BASE}/broadcasts/mine?email=${encodeURIComponent(userEmail)}`);
+    const data = await response.json();
+
+    if (data.broadcasts && data.broadcasts.length > 0) {
+      const broadcast = data.broadcasts[0];
+      document.getElementById('editBroadcastSection').style.display = 'block';
+      document.getElementById('editBroadcastId').value = broadcast.id;
+      document.getElementById('editBroadcastName').value = broadcast.name || '';
+      document.getElementById('editBroadcastMessage').value = broadcast.message || '';
+      document.getElementById('editBroadcastLink').value = broadcast.link || '';
+    } else {
+      document.getElementById('editBroadcastSection').style.display = 'none';
+    }
+  } catch (e) {
+    document.getElementById('editBroadcastSection').style.display = 'none';
+  }
+}
+
+document.getElementById('saveBroadcastBtn')?.addEventListener('click', async () => {
+  const broadcastId = document.getElementById('editBroadcastId').value;
+  const name = document.getElementById('editBroadcastName').value.trim();
+  const message = document.getElementById('editBroadcastMessage').value.trim();
+  const link = document.getElementById('editBroadcastLink').value.trim();
+
+  if (!broadcastId || !message) {
+    showToast('Message is required');
+    return;
+  }
+
+  const { settings: s } = await chrome.storage.local.get('settings');
+  const userEmail = s?.user?.email;
+
+  if (!userEmail) {
+    showToast('Please sign in to edit');
+    return;
+  }
+
+  const saveBtn = document.getElementById('saveBroadcastBtn');
+  saveBtn.textContent = 'Saving...';
+  saveBtn.disabled = true;
+
+  try {
+    const response = await fetch(`${API_BASE}/broadcasts/${broadcastId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: userEmail, name, message, link: link || null })
+    });
+
+    const result = await response.json();
+    if (response.ok && result.success) {
+      showToast('Broadcast updated!');
+      loadSupporters(); // Refresh the Billboard
+    } else {
+      showToast(result.error || 'Could not update');
+    }
+  } catch (e) {
+    showToast('Error: ' + e.message);
+  } finally {
+    saveBtn.textContent = 'Save Changes';
+    saveBtn.disabled = false;
+  }
+});
+
+// Load user's broadcasts after supporters
+loadMyBroadcasts();
+```
+
+---
+
+#### 5.8 Sister Apps / Our Other Projects Section
+
+**Every extension MUST include a "Our Other Projects" section** linking to other apps in the portfolio. This creates cross-promotion and reminds users that all apps share the same Billboard.
+
+Add to Settings tab in `popup.html`:
+```html
+<!-- OUR OTHER PROJECTS / SISTER APPS -->
+<div class="parent-section" style="margin-top:16px;">
+  <h3>🚀 Our Other Projects</h3>
+  <p style="font-size:11px;color:#8892b0;margin-bottom:12px;">
+    Check out our other apps — all part of the same mission.
+  </p>
+  <div id="sisterApps" style="display:flex;flex-direction:column;gap:8px;">
+    <!-- App 1 -->
+    <a href="https://[app1].pages.dev" target="_blank" style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(255,255,255,0.05);border-radius:8px;border:1px solid rgba(255,255,255,0.1);text-decoration:none;">
+      <span style="font-size:20px;">[EMOJI]</span>
+      <div style="flex:1;">
+        <div style="color:#ccd6f6;font-size:12px;font-weight:600;">[App Name]</div>
+        <div style="color:#8892b0;font-size:10px;">[Short description]</div>
+      </div>
+      <span style="color:#64ffda;font-size:12px;">→</span>
+    </a>
+    <!-- Repeat for each app -->
+  </div>
+  <p style="font-size:10px;color:#667eea;margin-top:12px;text-align:center;">
+    💜 Same mission. Same Billboard. Different tools.
+  </p>
+</div>
+```
+
+**Current portfolio apps to include:**
+| App | Emoji | URL | Description |
+|-----|-------|-----|-------------|
+| The School | 📚 | the-school.pages.dev | Free education for everyone |
+| 4chan Integrity | 🛡️ | 4chan-integrity.pages.dev | Detect manipulation & spam |
+| No BS Auth Codes | 🔐 | no-bs-auth-codes.pages.dev | Simple 2FA authenticator |
+| 4chan Votes | 👍 | 4chan-votes.pages.dev | Vote, save, share on 4chan |
+
+**Don't include the current app in its own sister apps list** (e.g., The School shouldn't list itself).
+
+### Phase 6: Asset Generation
 - Run generate-icons.js, generate-promo.js, take-screenshots.js
 - **⚠️ OPEN AND VERIFY each image - check text is not cut off!**
 
-### Phase 6: Website Deployment
+### Phase 7: Website Deployment
 ```bash
 npx wrangler pages project create [PROJECT] --production-branch main
 npx wrangler pages deploy . --project-name=[PROJECT]
 ```
 
-### Phase 7: GitHub Repository
+### Phase 8: GitHub Repository
 ```bash
 git init && git add -A
 curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user/repos -d '{"name":"REPO","private":true}'
@@ -1168,7 +1607,7 @@ git remote add origin https://$GITHUB_TOKEN@github.com/USERNAME/REPO.git
 git push -u origin main
 ```
 
-### Phase 8: Chrome Web Store Upload
+### Phase 9: Chrome Web Store Upload
 
 **Create extension zip:**
 ```bash
@@ -1397,3 +1836,37 @@ powershell Compress-Archive -Path manifest.json,content.js,popup.html,popup.js,s
 | Store form filling | No API available |
 | OAuth consent screen | Requires GCP Console |
 | Extension testing | User loads unpacked |
+
+---
+
+## Project Registry
+
+**IMPORTANT:** Folder names don't always match project names. Always check this registry before working on a project.
+
+### Chrome Extensions
+
+| Folder | Project Name | Description | GitHub Repo |
+|--------|-------------|-------------|-------------|
+| `4chan-shill-radar` | **4chan Integrity** | Detects manipulation/spam on 4chan, fingerprints posters | `4chan-integrity` |
+| `4chan-votes` | **4chan Votes** | Social layer for 4chan: vote, save, share, follow | `4chan-votes` |
+| `4chan-filter` | **Universal Thot Blocker** | AI-powered NSFW filter (NOT 4chan-related despite folder name) | — |
+| `no-bs-auth-codes` | **No BS Auth Codes** | TOTP 2FA authenticator with cloud sync | — |
+
+### ⚠️ Messy Naming Projects (Historical)
+
+| Folder | Store Name | Firebase/GCP | Worker | Notes |
+|--------|-----------|--------------|--------|-------|
+| `no-bs-auth-codes` | No BS Auth Codes | `auth-code-dashboard` | `justcodes-api` | See `PROJECT-NAMES.md` in folder |
+
+### Supporting Repos
+
+| Folder | Purpose | URL |
+|--------|---------|-----|
+| `4chan-integrity-site` | Landing page for 4chan Integrity | `4chan-integrity.pages.dev` |
+| `4chan-integrity-data` | Seed database for known patterns | `github.com/carlosfalai/4chan-integrity-data` |
+
+### Notes
+
+- **Do NOT rename folders** — breaks git remotes, paths, scripts
+- Internal code can use clean names (e.g., `IntegrityDB`) even if folder is `4chan-shill-radar`
+- When in doubt, check `manifest.json` → `name` field for the real project name
