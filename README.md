@@ -23,6 +23,20 @@ When working on Chrome extensions, reference this guide. For project-specific co
 - All text fields with exact copy-paste content
 - Permission justifications for each permission used
 
+### Monetization — NO Fake Affiliate Links
+**NEVER add placeholder affiliate links that don't actually pay.**
+- No `?ref=authcode` or similar fake tracking codes
+- No ads unless they actually generate revenue
+- For donations: Use Stripe payment links (no platform fees beyond ~3%)
+- For tips: Create a "Buy Me a Coffee" product in Stripe ($4.99) with optional message field
+- Google AdSense does NOT work in Chrome extensions (CSP blocks it)
+
+**Approved monetization methods:**
+1. Stripe one-time payments (Pro tiers, Lifetime, donations)
+2. Stripe subscriptions
+3. Chrome Web Store payments (discontinued by Google in 2020)
+4. Real affiliate programs (must have actual account with tracking ID)
+
 ### Support Pages Required
 **EVERY Chrome extension project MUST have a dedicated support page.**
 - Do NOT use custom email domains per project (no support@projectname.com)
@@ -66,16 +80,51 @@ store-assets/
 
 ---
 
+## ⚠️ MANDATORY: Test Before Reporting Done
+
+**NEVER tell the user a feature is complete without testing first!**
+
+After implementing any change:
+
+1. **Syntax Check** - Run Node.js syntax validation on all modified JS files:
+   ```bash
+   node --check background.js
+   node --check content.js
+   node --check popup.js
+   ```
+
+2. **JSON Validation** - Validate manifest.json:
+   ```bash
+   node -e "JSON.parse(require('fs').readFileSync('manifest.json'))"
+   ```
+
+3. **File Verification** - Confirm all required files exist and were modified:
+   ```bash
+   ls -la  # Check file sizes changed
+   ```
+
+4. **Playwright Testing** (when available) - Actually load the extension and verify behavior
+
+**Testing Sequence:**
+```
+Implement Feature → Syntax Check → JSON Check → File Check → Tell User Done
+```
+
+**If syntax errors are found:** Fix them immediately before reporting to user.
+
+---
+
 ## Extension Projects Location
 
 `C:\Users\Carlos Faviel Font\`
 
 ## Development Workflow
 
-1. Always test with Playwright after making changes — launch Chrome with the extension loaded and verify behavior
-2. Check console logs for errors (`page.on('console', ...)`)
-3. Take screenshots to verify visual changes (blur, overlays, layout)
-4. Test on multiple page types since DOM structure differs
+1. **ALWAYS test with syntax checks after making changes** — `node --check *.js`
+2. Always test with Playwright after making changes — launch Chrome with the extension loaded and verify behavior
+3. Check console logs for errors (`page.on('console', ...)`)
+4. Take screenshots to verify visual changes (blur, overlays, layout)
+5. Test on multiple page types since DOM structure differs
 
 ---
 
@@ -171,6 +220,108 @@ curl -X POST "https://firebaserules.googleapis.com/v1/projects/PROJECT_ID/rulese
 
 **5. Persistent GCP Browser Session:**
 Maintain at: `C:/Users/Carlos Faviel Font/chrome-gcp-profile`
+
+---
+
+## Auth-Gated Data Protection (CRITICAL)
+
+**All user data MUST be tied to authentication state.**
+
+When a user signs out, their data should NOT be accessible locally - just like Chrome bookmarks aren't visible when signed out of Chrome. This protects privacy on shared devices.
+
+### Implementation Pattern
+
+**1. popup.html - Add auth-required overlay:**
+```html
+<!-- Auth Required Screen - Shown when NOT signed in -->
+<div id="authRequired" style="display:none;">
+  <div class="auth-icon">🔐</div>
+  <h2>Sign in to Continue</h2>
+  <p>Your data is private and secure. Sign in to access your profiles, progress, and settings.</p>
+  <button class="auth-btn" id="authSignInBtn">
+    <img src="https://www.google.com/favicon.ico" width="18" height="18" alt="">
+    Sign in with Google
+  </button>
+  <p class="auth-privacy">
+    <strong>Privacy First:</strong> All your data is tied to your account.
+    When you sign out, nothing is accessible locally.
+  </p>
+</div>
+
+<!-- Main App Content - Only visible when signed in -->
+<div id="appContent">
+  <!-- All your app content here -->
+</div>
+```
+
+**2. popup.js - Auth check on load:**
+```javascript
+document.addEventListener('DOMContentLoaded', async () => {
+  const settingsData = await chrome.runtime.sendMessage({ action: 'getSettings' });
+  const settings = settingsData?.settings || {};
+  const isSignedIn = !!settings?.user;
+
+  const appContent = document.getElementById('appContent');
+  const authRequired = document.getElementById('authRequired');
+
+  if (!isSignedIn) {
+    // NOT SIGNED IN: Hide all app content
+    if (appContent) appContent.style.display = 'none';
+    if (authRequired) authRequired.style.display = 'flex';
+    setupSignInButton();
+    return; // Don't load any user data
+  }
+
+  // SIGNED IN: Show app, load data
+  if (appContent) appContent.style.display = 'block';
+  if (authRequired) authRequired.style.display = 'none';
+
+  // Now safe to load user data...
+});
+```
+
+**3. background.js - Clear ALL data on sign-out:**
+```javascript
+async function googleSignOut() {
+  try {
+    const token = await chrome.identity.getAuthToken({ interactive: false });
+    if (token?.token) {
+      await chrome.identity.removeCachedAuthToken({ token: token.token });
+    }
+
+    // CRITICAL: Clear ALL user data on sign-out
+    await chrome.storage.local.clear();
+
+    // Restore minimal defaults (no user data)
+    await chrome.storage.local.set({
+      settings: { enabled: false, user: null }
+    });
+
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+```
+
+**4. Test coverage:**
+```javascript
+// Test auth-required screen shows when not signed in
+const authVisible = await page.locator('#authRequired').isVisible();
+const appHidden = await page.locator('#appContent').evaluate(
+  el => getComputedStyle(el).display === 'none'
+);
+expect(authVisible && appHidden).toBe(true);
+```
+
+### Why This Matters
+
+- **Shared devices:** Family computers, school computers, library computers
+- **Privacy expectations:** Users expect sign-out to mean "hide my stuff"
+- **Chrome behavior:** Matches how Chrome handles bookmarks, history when signed out
+- **Trust:** Users trust that their data isn't visible to the next person
+
+**NEVER store sensitive data locally without auth-gating.**
 
 ---
 
